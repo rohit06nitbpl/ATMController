@@ -8,56 +8,11 @@ using namespace std;
 
 class StdCinWithTimeout
 {
-    /*
-    poll function returns 0 if timeout occurs and no event happened, 1 if something happened, and -1 if error happened.
-    */
-    /*static bool stop;
-    
-    
-    static void intHandler(int dummy)
-    {
-        StdCinWithTimeout::stop = true;
-    }
-    
-    public:
-    int readStdIn(string &line)
-    {
-        struct pollfd pfd = { STDIN_FILENO, POLLIN, 0 };
 
-        int ret = 0;
-        while(ret == 0)
-        {
-            ret = poll(&pfd, 1, 10000);  // timeout of 10000ms or 10s
-            if(ret == 1) // there is something to read
-            {
-                std::getline(std::cin, line);
-            }
-            else if(ret == -1)
-            {
-                std::cout << "Error: " << strerror(errno) << std::endl;
-            }
-        }
-        return ret;
-    }
-    
-    pair<int, string> read()
-    {
-        //std::function<void(int)> func;
-        //func = [this](int){this->stop = true;};
-        
-        signal(SIGINT, intHandler);
-        signal(SIGKILL, intHandler);
-        int ret = -2;
-        string line;
-        while(!StdCinWithTimeout::stop)
-        {
-            ret = readStdIn(line);
-        }
-        std::cout << "gracefully read input" << std::endl;
-        StdCinWithTimeout::stop = false;
-        return {ret, line};
-    }*/
-    
+    /*
+    * Class to handle user input
+    * called in separate async input thread 
+    */	
     public:
     string read()
     {
@@ -67,8 +22,6 @@ class StdCinWithTimeout
     }
 };
 
-//bool StdCinWithTimeout::stop = false;
-
 class ATMDevice
 {
     public:
@@ -76,7 +29,7 @@ class ATMDevice
     // returns the card number
     string readCard()
     {
-        //It is interface for separate real device 
+        //It is interface for a real mechanical device 
         //I am using standard input
         string res;
         getline(cin, res); // blocking call to std input
@@ -101,14 +54,21 @@ class ATMDevice
 
 class ATMBackendService
 {
-    
+    /*
+    * This client side object will make network communication and get data from servers
+    * I am storing all the user data locally, I am using mutex/lock to illustrate that this data is shared
+    * And this data should be accessed concurrently at server, Multiple request from diffrent ATM should be served concurrently by server
+    * There should be lock to access user specific data if same user can access service through diffrent ATM
+    * This object should be made at each ATM transaction and should store authentication token inorder to make subsequent call to server
+    * I have made only one object of this to make simple illustration 
+    */   
     unordered_map<string, size_t> user_auth_table; //card# , pin , card# are unique
     unordered_map<string, int> user_balance_table; //card#, balance
     
     std::mutex mtx;
     
     public:
-    bool authenticate(string card, size_t pin)
+    bool /*,token*/ authenticate(string card, size_t pin)
     {
         std::unique_lock<std::mutex> lck(mtx);
         if (user_auth_table.find(card) != user_auth_table.end())
@@ -122,7 +82,7 @@ class ATMBackendService
         return false;
     }
     
-    int getBalance(string card)
+    int getBalance(string card /*, token*/)
     {
         std::unique_lock<std::mutex> lck(mtx);
         if (user_balance_table.find(card) != user_balance_table.end())
@@ -130,10 +90,10 @@ class ATMBackendService
             return user_balance_table[card];
         }
         
-        return -1; // to indicate error
+        return -1; // to indicate error, balance can not be less than zero
     }
     
-    bool deposit(string card, int amount)
+    bool deposit(string card, int amount /*, token*/)
     {
         std::unique_lock<std::mutex> lck(mtx);
         if (user_balance_table.find(card) != user_balance_table.end())
@@ -144,7 +104,7 @@ class ATMBackendService
         return true; // possible failure could include things like network failure in real system , i am returning true always
     }
     
-    bool withdraw(string card, int amount)
+    bool withdraw(string card, int amount /*, token*/)
     {
         std::unique_lock<std::mutex> lck(mtx);
         if (user_balance_table.find(card) != user_balance_table.end())
@@ -163,6 +123,13 @@ class ATMBackendService
         return false;
     }
     
+    
+    /*
+    * Testing can be done at this object level and check if ledger is same as the legder at server side
+    * Testing should also be done at the level of physical device, responsible to receiving in and dispatching money
+    */
+     
+    // some data to interact with the system
     void setUserdata()
     {
         hash<string> hasher;
@@ -187,6 +154,7 @@ class ATMUserInterface
 {
     private:
     
+    //user interface type
     enum class InterfaceType
     {
         Login,
@@ -196,6 +164,7 @@ class ATMUserInterface
         ServiceDown
     };
     
+    //type of message to decide appropriate message and user interface
     enum class MessageLevel
     {
         Info,
@@ -205,6 +174,7 @@ class ATMUserInterface
         Notdefined
     };
     
+    //static constant strings used in application
     static const string serviceUnavailable;
     static const string ShuttingDown;
     static const string LoginWelcome;
@@ -230,6 +200,7 @@ class ATMUserInterface
     static const string InputTimeOut;
     static const string InvalidOption;
     
+    //hidden state of object
     ATMBackendService* atmBackendService;
     ATMDevice* device;
     StdCinWithTimeout *t_cin;
@@ -239,6 +210,8 @@ class ATMUserInterface
     ATMUserInterface::MessageLevel cmsgl;
     hash<string> stdhash;
     
+    //shows login page and intract with user to move to other page
+    //make async call for input and backend service while current thread handle user intraction
     void showLogin()
     {
         this->card = "";
@@ -297,6 +270,8 @@ class ATMUserInterface
         
     }
     
+    //Simple page to do one transaction at a time
+    //make async call and move user to final message display page and allows for dispatch and receiving of money
     void showSimpleOneTransactionScreen()
     {
         cout << SelectTransaction << endl;
@@ -304,7 +279,6 @@ class ATMUserInterface
         cout << _2_Withdraw << endl;
         cout << _3_Deposit << endl;
         
-        int option = 0;
         string res;
         
         auto fi1 = async(&StdCinWithTimeout::read, t_cin);
@@ -517,6 +491,10 @@ class ATMUserInterface
     
     void run()
     {
+        // This is finite state machine that goes from one valid state to another valid state based on user interaction
+        // using cInterface state variable ATM can be set to service down state or can turnoff remotely
+        // there can be a reset state
+        
         bool shutdown = false;
         while (!shutdown)
         {
@@ -553,7 +531,7 @@ class ATMUserInterface
                     cmsgl = ATMUserInterface::MessageLevel::ServiceError;
                     showMessage();
                     std::this_thread::sleep_for(std::chrono::seconds(30)); //30 seconds
-                    // I am not putting system in this ServiceDown or Shutdown state
+                    // I have not implemented serviceDown or Shutdown state in detail, It is only for illustration
                     break;
                 }
             }
@@ -564,6 +542,7 @@ class ATMUserInterface
     }
 };
 
+//string definitions , can be done in multiple language
 const string ATMUserInterface::serviceUnavailable = "ATM service is temporarily unavailable";
 const string ATMUserInterface::ShuttingDown = "ATM is shutting down";
 const string ATMUserInterface::LoginWelcome = "Welcome!";
